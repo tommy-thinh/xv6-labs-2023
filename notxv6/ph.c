@@ -16,6 +16,7 @@ struct entry {
 struct entry *table[NBUCKET];
 int keys[NKEYS];
 int nthread = 1;
+pthread_mutex_t lock;
 
 
 double
@@ -26,6 +27,7 @@ now()
  return tv.tv_sec + tv.tv_usec / 1000000.0;
 }
 
+// insert at the head of the list
 static void 
 insert(int key, int value, struct entry **p, struct entry *n)
 {
@@ -77,8 +79,11 @@ put_thread(void *xa)
   int n = (int) (long) xa; // thread number
   int b = NKEYS/nthread;
 
+  // each thread puts a disjoint set of keys, so no duplicates
   for (int i = 0; i < b; i++) {
+    pthread_mutex_lock(&lock);
     put(keys[b*n + i], n);
+    pthread_mutex_unlock(&lock);
   }
 
   return NULL;
@@ -104,6 +109,7 @@ main(int argc, char *argv[])
   pthread_t *tha;
   void *value;
   double t1, t0;
+  pthread_mutex_init(&lock, NULL); // initialize the lock
 
 
   if (argc < 2) {

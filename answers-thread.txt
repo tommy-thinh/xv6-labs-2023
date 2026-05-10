@@ -1,0 +1,43 @@
+Why are keys missing with 2 threads but not with 1?
+====================================================
+
+With 1 thread, put() runs to completion before the next put() begins, so
+each insert into a bucket sees the most recent head pointer. No interleaving
+is possible.
+
+With 2 threads, both can be inside insert() at the same time, prepending
+to the same bucket. The prepend is a non-atomic read-modify-write on
+table[i]:
+
+  e = malloc(...);
+  e->next = n;     // n was captured by the caller as table[i]
+  *p = e;          // *p is &table[i]: overwrite the head
+
+If both threads read the old head before either writes the new one, one
+of the two new nodes is lost.
+
+
+A concrete losing interleaving (threads A and B, same bucket i)
+---------------------------------------------------------------
+
+Initial state: table[i] = H  (H may be NULL or an existing chain)
+
+  T1.  A: enters put(kA), computes i, finds kA absent
+  T2.  A: calls insert(kA, ..., &table[i], table[i]) -- so n = H
+  T3.  B: enters put(kB), computes same i, finds kB absent
+  T4.  B: calls insert(kB, ..., &table[i], table[i]) -- so n = H also
+         (B reads table[i] = H because A has not yet written it)
+  T5.  A: eA = malloc(...); eA->next = H
+  T6.  B: eB = malloc(...); eB->next = H
+  T7.  A: *p = eA       -> table[i] = eA, chain is eA -> H -> ...
+  T8.  B: *p = eB       -> table[i] = eB, chain is eB -> H -> ...
+
+Final state: table[i] = eB -> H -> ...
+             eA is unreachable from the table -- kA is "missing".
+
+A later get(kA) walks from table[i] = eB through H and never sees eA,
+so it returns NULL and the missing-key counter increments.
+
+The fix is to make the search-and-insert in put() atomic with respect to
+other put()s on the same bucket -- either with one global mutex (ph_safe)
+or, for parallel speedup, with a per-bucket mutex (ph_fast).
